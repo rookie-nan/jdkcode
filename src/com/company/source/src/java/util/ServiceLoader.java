@@ -181,6 +181,13 @@ import java.util.NoSuchElementException;
  * @author Mark Reinhold
  * @since 1.6
  */
+//        优点：
+//        1.面向接口编程，服务提供方和服务使用方两者解耦，如，app和module1，module2。app中定义接口或者随意一个lib库来定义接口，然后m1和m2实现接口，进行功能开发，app作为服务使用者通过serviceloader进行服务的查询，当然，是根据META-INF/services下的文件里的实现类全限定名，反射构造对应的实现类实例进而进行调用。这样，两者虽然有对应的依赖关系，但是实际开发中会发现，代码里没有对应的硬编码类存在，进而达到解耦的目的。
+//        2.无代码侵入，提升程序扩展能力，和spi相比，普通的api调用是通过静态代码实现的，如果想改变功能实现，需要重新发版或者动态注入，而spi则可以大大提升代码的扩展性，因为没有静态硬编码到程序中，我们可以轻松的改变对应的接口实现，进而达到对当前功能的扩展。如，当前版本功能是输出log“第一个版本”，然后pm想改版为输出log“扩展版本”，这时候api的话就要修改调用方和提供方的代码，而spi只要把对应的服务提供方改变，服务调用方还是调用对应接口即可。
+//
+//
+//        缺点：
+//        1.因为当前的实现是通过serviceloader的遍历进行的，所以先后顺序包括指定执行是做不到的，所以这里的可控性就差了一些。
 
 public final class ServiceLoader<S>
     implements Iterable<S>
@@ -195,7 +202,7 @@ public final class ServiceLoader<S>
     private final ClassLoader loader;
 
     // The access control context taken when the ServiceLoader is created
-    private final AccessControlContext acc;
+//    private final AccessControlContext acc;
 
     // Cached providers, in instantiation order
     private LinkedHashMap<String,S> providers = new LinkedHashMap<>();
@@ -215,15 +222,17 @@ public final class ServiceLoader<S>
      * can be installed into a running Java virtual machine.
      */
     public void reload() {
+        //清空当前providers集合
         providers.clear();
         lookupIterator = new LazyIterator(service, loader);
     }
 
-    //
     private ServiceLoader(Class<S> svc, ClassLoader cl) {
         service = Objects.requireNonNull(svc, "Service interface cannot be null");
+        //如果没有当前线程的类加载器就获取系统类加载器
         loader = (cl == null) ? ClassLoader.getSystemClassLoader() : cl;
-        acc = (System.getSecurityManager() != null) ? AccessController.getContext() : null;
+        //java的，android这行代码注释掉了
+//        acc = (System.getSecurityManager() != null) ? AccessController.getContext() : null;
         reload();
     }
 
@@ -303,9 +312,10 @@ public final class ServiceLoader<S>
         ArrayList<String> names = new ArrayList<>();
         try {
             in = u.openStream();
+            //utf-8
             r = new BufferedReader(new InputStreamReader(in, "utf-8"));
             int lc = 1;
-            while ((lc = parseLine(service, u, r, lc, names)) >= 0);
+            while ((lc = parseLine(service, u, r, lc, names)) >= 0);//逐行读取配置文件
         } catch (IOException x) {
             fail(service, "Error reading configuration file", x);
         } finally {
@@ -320,12 +330,12 @@ public final class ServiceLoader<S>
     }
 
     // Private inner class implementing fully-lazy provider lookup
-    //
+    //集合迭代类，真正的获取集合内数据
     private class LazyIterator
         implements Iterator<S>
     {
 
-        Class<S> service;
+        Class<S> service;//接口
         ClassLoader loader;
         Enumeration<URL> configs = null;
         Iterator<String> pending = null;
@@ -337,16 +347,19 @@ public final class ServiceLoader<S>
         }
 
         private boolean hasNextService() {
+            //第一次进来这里 nextName=null，之后进来因为nextservice方法里已经reset了，这里依然为null
             if (nextName != null) {
                 return true;
             }
+            //第一次进入
             if (configs == null) {
                 try {
+                    //这里决定spi的路径是定死的是 META-INF/services/接口的全限定名称
                     String fullName = PREFIX + service.getName();
                     if (loader == null)
                         configs = ClassLoader.getSystemResources(fullName);
                     else
-                        configs = loader.getResources(fullName);
+                        configs = loader.getResources(fullName);//获取所有依赖包下的配置文件
                 } catch (IOException x) {
                     fail(service, "Error locating configuration files", x);
                 }
@@ -355,6 +368,7 @@ public final class ServiceLoader<S>
                 if (!configs.hasMoreElements()) {
                     return false;
                 }
+                //读取内容，拿到迭代器，解析时会校验对应的配置文件内容，有问题直接报错
                 pending = parse(service, configs.nextElement());
             }
             nextName = pending.next();
@@ -362,22 +376,28 @@ public final class ServiceLoader<S>
         }
 
         private S nextService() {
+            //无值报错
             if (!hasNextService())
                 throw new NoSuchElementException();
+            //临时变量承接下一条配置内容
             String cn = nextName;
+            //reset nextName
             nextName = null;
             Class<?> c = null;
             try {
+                //类加载器根据名称返回class实例
                 c = Class.forName(cn, false, loader);
             } catch (ClassNotFoundException x) {
                 fail(service,
                      "Provider " + cn + " not found");
             }
+            //判断是否是自己的子类 也就是实现类
             if (!service.isAssignableFrom(c)) {
                 fail(service,
                      "Provider " + cn  + " not a subtype");
             }
             try {
+                //c.newInstance实例化对应实现并存储到缓存中
                 S p = service.cast(c.newInstance());
                 providers.put(cn, p);
                 return p;
@@ -390,25 +410,25 @@ public final class ServiceLoader<S>
         }
 
         public boolean hasNext() {
-            if (acc == null) {
+//            if (acc == null) {
                 return hasNextService();
-            } else {
-                PrivilegedAction<Boolean> action = new PrivilegedAction<Boolean>() {
-                    public Boolean run() { return hasNextService(); }
-                };
-                return AccessController.doPrivileged(action, acc);
-            }
+//            } else {
+//                PrivilegedAction<Boolean> action = new PrivilegedAction<Boolean>() {
+//                    public Boolean run() { return hasNextService(); }
+//                };
+//                return AccessController.doPrivileged(action, acc);
+//            }
         }
 
         public S next() {
-            if (acc == null) {
+//            if (acc == null) {
                 return nextService();
-            } else {
-                PrivilegedAction<S> action = new PrivilegedAction<S>() {
-                    public S run() { return nextService(); }
-                };
-                return AccessController.doPrivileged(action, acc);
-            }
+//            } else {
+//                PrivilegedAction<S> action = new PrivilegedAction<S>() {
+//                    public S run() { return nextService(); }
+//                };
+//                return AccessController.doPrivileged(action, acc);
+//            }
         }
 
         public void remove() {
@@ -463,19 +483,22 @@ public final class ServiceLoader<S>
      * @return  An iterator that lazily loads providers for this loader's
      *          service
      */
+    //迭代器
     public Iterator<S> iterator() {
         return new Iterator<S>() {
-
+            //从缓存中拿到对应的键值对
             Iterator<Map.Entry<String,S>> knownProviders
                 = providers.entrySet().iterator();
 
             public boolean hasNext() {
+                //第一次进入把配置内容存储到缓存中，之后从缓存拿对应的实现类的实例进行判断即可
                 if (knownProviders.hasNext())
                     return true;
                 return lookupIterator.hasNext();
             }
 
             public S next() {
+                //第一次进入把配置内容存储到缓存中，之后从缓存拿对应的实现类的实例进行判断即可
                 if (knownProviders.hasNext())
                     return knownProviders.next().getValue();
                 return lookupIterator.next();
